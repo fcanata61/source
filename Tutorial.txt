@@ -1,0 +1,233 @@
+===============================================================================
+                      TUTORIAL COMPLETO - SOURCE LFS MANAGER
+===============================================================================
+
+1. INTRODUÇÃO
+-------------
+O Source LFS Manager é um gerenciador minimalista para Linux From Scratch (LFS) 
+que automatiza a compilação e instalação de pacotes, com suporte a patch remoto, 
+cache, dependências, toolchain e repositórios Git estruturados.
+
+Principais funcionalidades:
+- Build e Install separados
+- Patch remoto e cache
+- Resolução de dependências recursiva
+- Registro de arquivos instalados (files.list)
+- Empacotamento incremental
+- Logs coloridos
+- Strip opcional de binários
+- Rebuild de sistema inteiro
+- Clean do diretório de trabalho
+- Pacotes órfãos
+- Dry-run
+- Criação/remoção de usuários e grupos via hooks
+- Suporte a múltiplos repositórios Git e subpastas
+
+-------------------------------------------------------------------------------
+2. INSTALAÇÃO
+-------------
+1. Clone o repositório do Source LFS Manager:
+   $ git clone <repo_source_lfs> source-lfs
+   $ cd source-lfs
+
+2. Crie os diretórios de trabalho e cache:
+   $ mkdir -p work pkgs cache logs var/lib/source
+
+3. Configure permissões se necessário:
+   $ chmod +x source.sh
+
+-------------------------------------------------------------------------------
+3. CONFIGURAÇÃO
+---------------
+Edite o arquivo 'config' para definir as variáveis globais:
+
+DESTDIR="/tmp/source-build"
+PREFIX="/usr"
+WORKDIR="/tmp/source-work"
+PKGDIR="/tmp/source-pkgs"
+SRC_CACHE="./cache"
+INSTALLED="./var/lib/source/installed"
+LOGDIR="./logs"
+
+STRIP=false       # true para remover símbolos dos binários
+VERBOSE=false     # true para logs detalhados
+
+# Toolchain
+TOOLCHAIN_PREFIX="/tools"
+CC="$TOOLCHAIN_PREFIX/bin/gcc"
+CXX="$TOOLCHAIN_PREFIX/bin/g++"
+AR="$TOOLCHAIN_PREFIX/bin/ar"
+AS="$TOOLCHAIN_PREFIX/bin/as"
+LD="$TOOLCHAIN_PREFIX/bin/ld"
+RANLIB="$TOOLCHAIN_PREFIX/bin/ranlib"
+
+# Flags globais
+CFLAGS="-O2 -g"
+LDFLAGS=""
+
+# Receitas (paths)
+RECIPE_PATHS=(
+    "./recipes"
+    "./recipes-repo/base"
+    "./recipes-repo/x11"
+    "./recipes-repo/extras"
+    "./recipes-repo/desktop"
+)
+
+-------------------------------------------------------------------------------
+4. ÁRVORE DE DIRETÓRIOS
+-----------------------
+source-lfs/
+├── config                  # Configurações globais
+├── recipes/                # Receitas locais (.src)
+├── recipes-repo/           # Repositório Git com subpastas
+│   ├── base/
+│   ├── x11/
+│   ├── extras/
+│   └── desktop/
+├── work/                   # Diretório de compilação temporário
+├── pkgs/                   # Pacotes compilados e instalados
+├── cache/                  # Tarballs e patches baixados
+├── logs/                   # Logs de compilação
+├── var/lib/source/installed/  # Registro de pacotes instalados
+
+-------------------------------------------------------------------------------
+5. COMANDOS SUPORTADOS
+----------------------
+Uso geral:
+$ ./source.sh <comando> [pacote] [toolchain_override]
+
+Comandos:
+- build <pacote>         : Compila o pacote sem instalar
+- install <pacote>       : Compila e instala o pacote
+- remove <pacote>        : Remove o pacote instalado
+- update <pacote>        : Atualiza tarball/patch do pacote
+- update --all           : Atualiza todos os pacotes do repositório
+- rebuild                : Recompila todos os pacotes instalados
+- clean                  : Limpa o diretório de trabalho (work/)
+- search <termo>         : Busca pacotes pelas receitas
+- info <pacote>          : Exibe informações da receita
+- orphans                : Lista pacotes órfãos
+- dry-run <comando>      : Simula execução do comando
+- Suporte a toolchain:
+  ./source.sh install bash /opt/mytoolchain
+
+-------------------------------------------------------------------------------
+6. CONFIGURANDO E USANDO TOOLCHAIN
+---------------------------------
+1. Configure no 'config':
+TOOLCHAIN_PREFIX="/tools"
+CC="$TOOLCHAIN_PREFIX/bin/gcc"
+CXX="$TOOLCHAIN_PREFIX/bin/g++"
+AR="$TOOLCHAIN_PREFIX/bin/ar"
+AS="$TOOLCHAIN_PREFIX/bin/as"
+LD="$TOOLCHAIN_PREFIX/bin/ld"
+RANLIB="$TOOLCHAIN_PREFIX/bin/ranlib"
+
+2. Nas receitas, use as variáveis:
+build() {
+    ./configure --prefix=/usr \
+        CC="$CC" CXX="$CXX" AR="$AR" AS="$AS" LD="$LD" RANLIB="$RANLIB" \
+        CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+    make -j$(nproc)
+}
+
+3. Override por CLI:
+$ ./source.sh install bash /opt/mytoolchain
+
+-------------------------------------------------------------------------------
+7. EXEMPLO DE RECEITA (bash.src)
+--------------------------------
+NAME="bash"
+VERSION="5.2"
+URL="https://ftp.gnu.org/gnu/bash/bash-$VERSION.tar.gz"
+PATCH="https://www.linuxfromscratch.org/patches/lfs/12.0/bash-5.2-fixes-1.patch"
+DEPENDS="readline ncurses"
+
+# build apenas compila
+build() {
+    ./configure --prefix=/usr \
+        CC="$CC" CXX="$CXX" AR="$AR" AS="$AS" LD="$LD" RANLIB="$RANLIB" \
+        CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+    make -j$(nproc)
+}
+
+# remove hooks
+remove() {
+    true
+}
+
+# Usuário/Grupo (opcional)
+USER_NAME="bashuser"
+GROUP_NAME="bashgroup"
+
+-------------------------------------------------------------------------------
+8. CONFIGURANDO REPOSITÓRIO
+---------------------------
+1. Estrutura de repositório Git:
+recipes-repo/
+├── base/
+├── x11/
+├── extras/
+└── desktop/
+
+2. Clonando o repositório:
+$ git clone <repo_git> recipes-repo
+
+3. Adicione o path no config:
+RECIPE_PATHS+=("./recipes-repo/base" "./recipes-repo/x11" \
+               "./recipes-repo/extras" "./recipes-repo/desktop")
+
+-------------------------------------------------------------------------------
+9. EXEMPLO DE USO
+-----------------
+1. Build do bash (compila sem instalar):
+$ ./source.sh build bash
+
+2. Instalação completa:
+$ ./source.sh install bash
+
+3. Atualizar tarball/patch do bash:
+$ ./source.sh update bash
+
+4. Atualizar todos os pacotes:
+$ ./source.sh update --all
+
+5. Remover pacote:
+$ ./source.sh remove bash
+
+6. Recompilar todo o sistema:
+$ ./source.sh rebuild
+
+7. Limpar diretório de trabalho:
+$ ./source.sh clean
+
+8. Buscar pacotes:
+$ ./source.sh search bash
+
+9. Obter informações da receita:
+$ ./source.sh info bash
+
+10. Listar pacotes órfãos:
+$ ./source.sh orphans
+
+11. Usar toolchain específico:
+$ ./source.sh install bash /opt/mytoolchain
+
+12. Dry-run (simulação):
+$ ./source.sh dry-run install bash
+
+-------------------------------------------------------------------------------
+10. NOTAS FINAIS
+----------------
+- Todas as receitas devem estar no formato .src com build() definido
+- Dependências são resolvidas recursivamente antes da compilação
+- Patch remoto é baixado para cache antes de aplicar
+- Logs são salvos em logs/<pacote>-<versão>.log
+- Arquivos instalados são registrados em var/lib/source/installed/<pacote>/files.list
+- Strip opcional pode reduzir tamanho dos binários
+- Dry-run permite simular comandos sem executar
+
+===============================================================================
+FIM DO TUTORIAL - SOURCE LFS MANAGER
+===============================================================================
