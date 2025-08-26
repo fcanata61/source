@@ -1,0 +1,260 @@
+#!/bin/sh
+# Source LFS Manager - Parte 1
+# Funcionalidades: Config, cores, spinner, utilitários, fetch, build/install
+
+# ---- 1. Configuração ----
+. ./config
+
+# TOOLCHAIN (override por CLI)
+if [ -n "$TOOLCHAIN_OVERRIDE" ]; then
+    TOOLCHAIN_PREFIX="$TOOLCHAIN_OVERRIDE"
+fi
+
+CC="$TOOLCHAIN_PREFIX/bin/gcc"
+CXX="$TOOLCHAIN_PREFIX/bin/g++"
+AR="$TOOLCHAIN_PREFIX/bin/ar"
+AS="$TOOLCHAIN_PREFIX/bin/as"
+LD="$TOOLCHAIN_PREFIX/bin/ld"
+RANLIB="$TOOLCHAIN_PREFIX/bin/ranlib"
+
+# Flags globais
+CFLAGS="${CFLAGS:-"-O2 -g"}"
+LDFLAGS="${LDFLAGS:-""}"
+
+# ---- 2. Cores e spinner ----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+spinner() {
+    text="$1"
+    while :; do
+        for s in / - \\ \|; do
+            printf "\r$s $text"
+            sleep 0.1
+        done
+    done
+}
+
+# ---- 3. Utilitários ----
+mkdir_p() { [ ! -d "$1" ] && mkdir -p "$1"; }
+
+# ---- 4. Buscar receita ----
+find_recipe() {
+    pkg="$1"
+    for dir in "${RECIPE_PATHS[@]}"; do
+        [ -f "$dir/$pkg.src" ] && echo "$dir/$pkg.src" && return
+    done
+    return 1
+}
+
+# ---- 5. Carregar receita ----
+load_recipe() { . "$1"; }
+
+# ---- 6. Ler dependências ----
+get_depends() { grep '^DEPENDS=' "$1" | cut -d'"' -f2; }
+
+# ---- 7. Fetch tarball e patch remoto ----
+fetch_sources() {
+    url="$1"
+    patch="$2"
+    pkg="$3"
+
+    mkdir_p "$SRC_CACHE"
+
+    tarfile="$SRC_CACHE/$(basename $url)"
+    [ ! -f "$tarfile" ] && echo "${YELLOW}Baixando $url...${NC}" && curl -L "$url" -o "$tarfile"
+
+    patchfile=""
+    case "$patch" in
+        http*) patchfile="$SRC_CACHE/$(basename $patch)"
+               [ ! -f "$patchfile" ] && echo "${YELLOW}Baixando patch $patch...${NC}" && curl -L "$patch" -o "$patchfile" ;;
+        "") patchfile="" ;;
+        *) patchfile="$patch" ;;
+    esac
+
+    echo "$tarfile" "$patchfile"
+}
+
+# ---- 8. Resolver dependências recursivamente ----
+resolve_depends() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada: $pkg${NC}"; return 1; }
+    deps=$(get_depends "$srcfile")
+    for dep in $deps; do
+        [ ! -d "$INSTALLED/$dep" ] && install_package "$dep"
+    done
+}
+
+# ---- 9. Build apenas compila ----
+build_package() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada: $pkg${NC}"; return 1; }
+    load_recipe "$srcfile"
+
+    resolve_depends "$pkg"
+
+    mkdir_p "$WORKDIR/$NAME-$VERSION"
+    mkdir_p "$LOGDIR"
+
+    cd "$WORKDIR" || exit
+
+    tarfile=$(fetch_sources "$URL" "$PATCH" "$NAME" | awk '{print $1}')
+    patchfile=$(fetch_sources "$URL" "$PATCH" "$NAME" | awk '{print $2}')
+
+    tar -xf "$tarfile"
+    cd "$NAME-$VERSION" || exit
+    [ -n "$patchfile" ] && patch -Np1 < "$patchfile"
+
+    echo "${GREEN}Compilando $NAME-$VERSION...${NC}"
+    build &> "$LOGDIR/$NAME-$VERSION.log"
+}
+
+# ---- 10. Install completo ----
+install_package() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada: $pkg${NC}"; return 1; }
+    load_recipe "$srcfile"
+
+    mkdir_p "$INSTALLED/$pkg" "$PKGDIR" "$DESTDIR" "$LOGDIR"
+
+    [ ! -d "$WORKDIR/$NAME-$VERSION" ] && build_package "$pkg"
+    cd "$WORKDIR/$NAME-$VERSION" || exit
+
+    echo "${GREEN}Instalando $NAME-$VERSION...${NC}"
+
+    # Build com toolchain e flags
+    build &>> "$LOGDIR/$NAME-$VERSION.log"
+    make DESTDIR="$DESTDIR" install &>> "$LOGDIR/$NAME-$VERSION.log"
+
+    [ "$STRIP" = true ] && find "$DESTDIR" -type f -exec strip {} \; 2>/dev/null
+
+    # Empacotamento incremental
+    cp -a "$DESTDIR"/* "$PKGDIR/"
+    find "$DESTDIR" -type f > "$INSTALLED/$pkg/files.list"
+
+    echo "${GREEN}$pkg instalado${NC}"
+}
+# Funcionalidades: Remove, Update, Rebuild, Clean, Orphans, Dry-run, Users/Groups, CLI
+# ---- 11. Remove pacote ----
+remove_package() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada: $pkg${NC}"; return 1; }
+    load_recipe "$srcfile"
+
+    [ -f "$INSTALLED/$pkg/files.list" ] && xargs rm -f < "$INSTALLED/$pkg/files.list"
+    [ -d "$INSTALLED/$pkg" ] && rmdir "$INSTALLED/$pkg" 2>/dev/null
+
+    # Hooks de remoção (usuários/grupos)
+    if type remove >/dev/null 2>&1; then
+        remove
+    fi
+
+    echo "${YELLOW}$pkg removido${NC}"
+}
+
+# ---- 12. Update pacote ----
+update_package() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada: $pkg${NC}"; return 1; }
+    load_recipe "$srcfile"
+
+    fetch_sources "$URL" "$PATCH" "$NAME"
+    echo "${GREEN}$pkg atualizado${NC}"
+}
+
+# ---- 13. Update all ----
+update_all() {
+    for dir in "${RECIPE_PATHS[@]}"; do
+        for r in "$dir"/*.src; do
+            pkg=$(basename "$r" .src)
+            update_package "$pkg"
+        done
+    done
+}
+
+# ---- 14. Rebuild sistema ----
+rebuild_system() {
+    for pkgdir in "$INSTALLED"/*; do
+        pkg=$(basename "$pkgdir")
+        echo "${YELLOW}Recompilando $pkg...${NC}"
+        install_package "$pkg"
+    done
+}
+
+# ---- 15. Clean diretório de trabalho ----
+clean_work() {
+    rm -rf "$WORKDIR"
+    echo "${YELLOW}Workdir limpo${NC}"
+}
+
+# ---- 16. Pacotes órfãos ----
+orphans() {
+    for pkgdir in "$INSTALLED"/*; do
+        pkg=$(basename "$pkgdir")
+        # Lista simplificada
+        echo "$pkg"
+    done
+}
+
+# ---- 17. Search e info ----
+search_package() {
+    term="$1"
+    for dir in "${RECIPE_PATHS[@]}"; do
+        find "$dir" -name "*.src" -exec basename {} .src \; | grep "$term"
+    done
+}
+
+info_package() {
+    pkg="$1"
+    srcfile=$(find_recipe "$pkg") || { echo "${RED}Receita não encontrada${NC}"; return 1; }
+    load_recipe "$srcfile"
+
+    echo "Nome: $NAME"
+    echo "Versão: $VERSION"
+    echo "URL: $URL"
+    echo "Patch: $PATCH"
+    echo "Dependências: $DEPENDS"
+}
+
+# ---- 18. Dry-run ----
+dry_run() {
+    cmd="$1"
+    pkg="$2"
+    echo "${YELLOW}Dry-run: comando '$cmd' para pacote '$pkg' simulado${NC}"
+}
+
+# ---- 19. Criação/remoção de usuários e grupos (hooks) ----
+create_user_group() {
+    if [ -n "$USER_NAME" ]; then
+        id "$USER_NAME" >/dev/null 2>&1 || useradd "$USER_NAME"
+    fi
+    if [ -n "$GROUP_NAME" ]; then
+        getent group "$GROUP_NAME" >/dev/null || groupadd "$GROUP_NAME"
+    fi
+}
+
+remove_user_group() {
+    [ -n "$USER_NAME" ] && userdel "$USER_NAME" 2>/dev/null
+    [ -n "$GROUP_NAME" ] && groupdel "$GROUP_NAME" 2>/dev/null
+}
+
+# ---- 20. CLI principal ----
+cmd="$1"
+pkg="$2"
+TOOLCHAIN_OVERRIDE="$3"  # opcional
+
+case "$cmd" in
+    build) build_package "$pkg" ;;
+    install) install_package "$pkg" ;;
+    remove) remove_package "$pkg" ;;
+    update) [ "$pkg" = "--all" ] && update_all || update_package "$pkg" ;;
+    rebuild) rebuild_system ;;
+    clean) clean_work ;;
+    search) search_package "$pkg" ;;
+    info) info_package "$pkg" ;;
+    orphans) orphans ;;
+    dry-run) dry_run "$pkg" "$TOOLCHAIN_OVERRIDE" ;;
+    *) echo "Comandos: build, install, remove, update, rebuild, clean, search, info, orphans, dry-run" ;;
+esac
