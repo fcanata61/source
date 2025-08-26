@@ -1,0 +1,20 @@
+# Diretórios padrão
+DESTDIR="/tmp/source-build"
+PREFIX="/usr"
+WORKDIR="/tmp/source-work"
+PKGDIR="/tmp/source-pkgs"
+SRC_CACHE="./cache"
+INSTALLED="./var/lib/source/installed"
+
+# Lista de caminhos onde o motor procura receitas
+RECIPE_PATHS=(
+    "./recipes"                   # receitas locais
+    "./recipes-repo/base"         # Git: base
+    "./recipes-repo/x11"          # Git: X11
+    "./recipes-repo/extras"       # Git: extras
+    "./recipes-repo/desktop"      # Git: desktop
+)
+
+# Flags globais
+STRIP=false     # strip binários após build
+VERBOSE=false   # logs detalhados
